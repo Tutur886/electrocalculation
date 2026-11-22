@@ -1,10 +1,6 @@
 package ch.tutur.electrocalc
 
-import android.content.Context
 import android.content.Intent
-import android.net.Uri
-import android.provider.DocumentsContract
-import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -14,16 +10,17 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -34,19 +31,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.core.content.FileProvider
 import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.util.UUID
 
-private fun queryName(context: Context, uri: Uri): String? {
-    context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
-        ?.use { c -> if (c.moveToFirst()) return c.getString(0) }
-    return null
-}
+private const val HIDDEN_PREFIX = ".ecv_"
 
 private fun mimeFromName(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
     "jpg", "jpeg" -> "image/jpeg"
@@ -61,12 +52,6 @@ private fun mimeFromName(name: String): String = when (name.substringAfterLast('
     else -> "application/octet-stream"
 }
 
-private fun decryptedDir(context: Context): File = File(context.cacheDir, "decrypted")
-
-private fun wipeClear(context: Context) {
-    decryptedDir(context).deleteRecursively()
-}
-
 @Composable
 fun SetPasswordScreen(store: VaultStore, onDone: () -> Unit) {
     val p1 = remember { mutableStateOf("") }
@@ -77,20 +62,21 @@ fun SetPasswordScreen(store: VaultStore, onDone: () -> Unit) {
         Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        TextButton(onClick = onDone) { Text("← Retour") }
-        Text("Configuration de l'espace sécurisé", style = MaterialTheme.typography.headlineSmall)
-        Text("Choisis un mot de passe secret. Le rechercher plus tard dans la barre ouvrira l'espace sécurisé.")
+        AppHeader("Configuration", onBack = onDone)
+        Text("Choisis un mot de passe secret. Le rechercher plus tard dans la barre ouvrira cet espace.")
         OutlinedTextField(
             value = p1.value, onValueChange = { p1.value = it },
             label = { Text("Mot de passe") },
             visualTransformation = PasswordVisualTransformation(),
-            singleLine = true, modifier = Modifier.fillMaxWidth()
+            singleLine = true, shape = RoundedCornerShape(14.dp),
+            modifier = Modifier.fillMaxWidth()
         )
         OutlinedTextField(
             value = p2.value, onValueChange = { p2.value = it },
             label = { Text("Confirmer") },
             visualTransformation = PasswordVisualTransformation(),
-            singleLine = true, modifier = Modifier.fillMaxWidth()
+            singleLine = true, shape = RoundedCornerShape(14.dp),
+            modifier = Modifier.fillMaxWidth()
         )
         Button(onClick = {
             val a = p1.value
@@ -114,22 +100,16 @@ fun VaultScreen(password: String, store: VaultStore, onBack: () -> Unit) {
     var status by remember { mutableStateOf("") }
     var tree by remember { mutableStateOf(store.treeUri) }
     var clearFiles by remember { mutableStateOf<List<DocumentFile>>(emptyList()) }
-    var binFiles by remember { mutableStateOf<List<DocumentFile>>(emptyList()) }
-
-    // La copie en clair ne vit que dans le cache privé de l'app : on l'efface à l'entrée
-    // et à la sortie du coffre. Rien de clair n'est jamais écrit sur la clé USB.
-    DisposableEffect(Unit) {
-        wipeClear(context)
-        onDispose { wipeClear(context) }
-    }
+    var hiddenCount by remember { mutableStateOf(0) }
+    var busy by remember { mutableStateOf(false) }
 
     fun refresh() {
         val t = tree
         val all = if (t != null) {
             DocumentFile.fromTreeUri(context, t)?.listFiles()?.toList() ?: emptyList()
         } else emptyList()
-        clearFiles = all.filter { it.isFile && it.name?.endsWith(".bin") == false }
-        binFiles = all.filter { it.name?.endsWith(".bin") == true }
+        clearFiles = all.filter { it.isFile && (it.name?.startsWith(".") == false) }
+        hiddenCount = all.count { it.name?.startsWith(HIDDEN_PREFIX) == true }
     }
 
     LaunchedEffect(tree) { refresh() }
@@ -150,104 +130,95 @@ fun VaultScreen(password: String, store: VaultStore, onBack: () -> Unit) {
         }
     }
 
-    // Chiffre un fichier en clair déjà présent sur la clé, puis supprime l'original.
-    fun hideKeyFile(doc: DocumentFile) {
+    // Chiffre un fichier en clair de la clé, le cache (nom .ecv_…), supprime l'original.
+    suspend fun encryptOne(dir: DocumentFile, doc: DocumentFile): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val name = doc.name ?: "fichier"
+            val data = context.contentResolver.openInputStream(doc.uri)!!.use { it.readBytes() }
+            val blob = Crypto.encrypt(password, name, data)
+            val out = dir.createFile(
+                "application/octet-stream",
+                HIDDEN_PREFIX + UUID.randomUUID().toString().replace("-", "")
+            ) ?: return@withContext false
+            context.contentResolver.openOutputStream(out.uri)!!.use { it.write(blob) }
+            doc.delete()
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    // Déchiffre un .ecv_… et réécrit le fichier EN CLAIR sur la clé, supprime le .ecv_…
+    suspend fun decryptOne(dir: DocumentFile, doc: DocumentFile): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val blob = context.contentResolver.openInputStream(doc.uri)!!.use { it.readBytes() }
+            val dec = Crypto.decrypt(password, blob)
+            val out = dir.createFile(mimeFromName(dec.name), dec.name) ?: return@withContext false
+            context.contentResolver.openOutputStream(out.uri)!!.use { it.write(dec.data) }
+            doc.delete()
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    fun encryptAll() {
         val t = tree ?: return
+        if (busy) return
         scope.launch {
-            status = "Chiffrement…"
-            val res = withContext(Dispatchers.IO) {
-                try {
-                    val name = doc.name ?: "fichier"
-                    val data = context.contentResolver.openInputStream(doc.uri)!!.use { it.readBytes() }
-                    val blob = Crypto.encrypt(password, name, data)
-                    val dir = DocumentFile.fromTreeUri(context, t)!!
-                    val out = dir.createFile(
-                        "application/octet-stream",
-                        UUID.randomUUID().toString().replace("-", "") + ".bin"
-                    ) ?: return@withContext "Impossible de créer le fichier chiffré."
-                    context.contentResolver.openOutputStream(out.uri)!!.use { it.write(blob) }
-                    val deleted = doc.delete()
-                    if (deleted) "Caché, original effacé : $name"
-                    else "Caché : $name (⚠ original non supprimé)"
-                } catch (e: Exception) {
-                    "Erreur : ${e.message}"
-                }
-            }
-            status = res
-            refresh()
-        }
-    }
-
-    // Import depuis le téléphone : chiffre vers la clé, puis tente d'effacer l'original.
-    val pickFile = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        val t = tree
-        if (uri == null) return@rememberLauncherForActivityResult
-        if (t == null) { status = "Choisis d'abord le dossier (clé USB)."; return@rememberLauncherForActivityResult }
-        scope.launch {
-            status = "Chiffrement…"
-            val res = withContext(Dispatchers.IO) {
-                try {
-                    val name = queryName(context, uri) ?: "fichier"
-                    val data = context.contentResolver.openInputStream(uri)!!.use { it.readBytes() }
-                    val blob = Crypto.encrypt(password, name, data)
-                    val dir = DocumentFile.fromTreeUri(context, t)!!
-                    val out = dir.createFile(
-                        "application/octet-stream",
-                        UUID.randomUUID().toString().replace("-", "") + ".bin"
-                    ) ?: return@withContext "Impossible de créer le fichier chiffré."
-                    context.contentResolver.openOutputStream(out.uri)!!.use { it.write(blob) }
-                    val deleted = try {
-                        DocumentsContract.deleteDocument(context.contentResolver, uri)
-                    } catch (_: Exception) { false }
-                    if (deleted) "Importé et chiffré : $name (original effacé)"
-                    else "Importé et chiffré : $name (original du téléphone à effacer à la main)"
-                } catch (e: Exception) {
-                    "Erreur : ${e.message}"
-                }
-            }
-            status = res
-            refresh()
-        }
-    }
-
-    // Déchiffre dans le cache privé, ouvre le fichier, ne laisse rien sur la clé.
-    fun openBin(doc: DocumentFile) {
-        scope.launch {
-            status = "Déchiffrement…"
-            val file = withContext(Dispatchers.IO) {
-                try {
-                    val blob = context.contentResolver.openInputStream(doc.uri)!!.use { it.readBytes() }
-                    val dec = Crypto.decrypt(password, blob)
-                    val dir = decryptedDir(context)
-                    dir.mkdirs()
-                    val f = File(dir, dec.name)
-                    f.writeBytes(dec.data)
-                    f
-                } catch (e: Exception) {
-                    null
-                }
-            }
-            if (file == null) {
-                status = "Échec (mauvais mot de passe ou fichier corrompu)."
+            busy = true
+            val dir = DocumentFile.fromTreeUri(context, t)
+            val targets = dir?.listFiles()?.filter { it.isFile && it.name?.startsWith(".") == false } ?: emptyList()
+            if (dir == null || targets.isEmpty()) {
+                status = "Aucun fichier en clair à chiffrer."
+                busy = false
                 return@launch
             }
-            try {
-                val uri = FileProvider.getUriForFile(
-                    context, context.packageName + ".fileprovider", file
-                )
-                val view = Intent(Intent.ACTION_VIEW).apply {
-                    setDataAndType(uri, mimeFromName(file.name))
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                }
-                val chooser = Intent.createChooser(view, "Ouvrir avec")
-                chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                context.startActivity(chooser)
-                status = "Ouvert : ${file.name} (copie en clair effacée à la sortie du coffre)"
-            } catch (e: Exception) {
-                status = "Aucune application pour ouvrir ${file.name}."
+            var done = 0; var fail = 0
+            targets.forEachIndexed { i, doc ->
+                status = "Chiffrement ${i + 1}/${targets.size}…"
+                if (encryptOne(dir, doc)) done++ else fail++
             }
+            status = "Chiffré et caché : $done" + if (fail > 0) " · échecs : $fail" else ""
+            busy = false
+            refresh()
+        }
+    }
+
+    fun decryptAll() {
+        val t = tree ?: return
+        if (busy) return
+        scope.launch {
+            busy = true
+            val dir = DocumentFile.fromTreeUri(context, t)
+            val targets = dir?.listFiles()?.filter { it.name?.startsWith(HIDDEN_PREFIX) == true } ?: emptyList()
+            if (dir == null || targets.isEmpty()) {
+                status = "Aucun fichier chiffré."
+                busy = false
+                return@launch
+            }
+            var done = 0; var fail = 0
+            targets.forEachIndexed { i, doc ->
+                status = "Déchiffrement ${i + 1}/${targets.size}…"
+                if (decryptOne(dir, doc)) done++ else fail++
+            }
+            status = "Déchiffré : $done" + if (fail > 0) " · échecs (mot de passe ?) : $fail" else ""
+            busy = false
+            refresh()
+        }
+    }
+
+    fun hideOne(doc: DocumentFile) {
+        val t = tree ?: return
+        if (busy) return
+        scope.launch {
+            busy = true
+            val dir = DocumentFile.fromTreeUri(context, t)
+            if (dir == null) { busy = false; return@launch }
+            status = "Chiffrement…"
+            status = if (encryptOne(dir, doc)) "Caché : ${doc.name}" else "Erreur sur ${doc.name}"
+            busy = false
+            refresh()
         }
     }
 
@@ -255,53 +226,74 @@ fun VaultScreen(password: String, store: VaultStore, onBack: () -> Unit) {
         Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        TextButton(onClick = { wipeClear(context); onBack() }) { Text("← Retour") }
-        Text("Espace sécurisé", style = MaterialTheme.typography.headlineSmall)
-        Text(
-            if (tree == null) "Aucun dossier choisi."
-            else "Dossier : ${tree?.lastPathSegment ?: tree.toString()}",
-            style = MaterialTheme.typography.bodySmall
-        )
+        AppHeader("Espace sécurisé", onBack = onBack)
 
-        OutlinedButton(onClick = { pickTree.launch(null) }, modifier = Modifier.fillMaxWidth()) {
-            Text("Choisir le dossier (clé USB)")
-        }
-        OutlinedButton(
-            onClick = { pickFile.launch(arrayOf("*/*")) },
-            enabled = tree != null,
+        Card(
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text("Importer un fichier (téléphone)")
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    if (tree == null) "Aucun dossier choisi."
+                    else "Dossier : ${tree?.lastPathSegment ?: tree.toString()}",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Text(
+                    "En clair : ${clearFiles.size}   ·   Cachés : $hiddenCount",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedButton(
+                    onClick = { pickTree.launch(null) },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Choisir le dossier (clé USB)") }
+            }
         }
 
+        Button(
+            onClick = { encryptAll() },
+            enabled = tree != null && !busy,
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("🔒  Tout chiffrer et cacher") }
+
+        FilledTonalButton(
+            onClick = { decryptAll() },
+            enabled = tree != null && !busy,
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("🔓  Tout déchiffrer") }
+
         if (status.isNotEmpty()) {
-            Card(Modifier.fillMaxWidth()) {
+            Card(
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
                 Text(status, Modifier.padding(12.dp))
             }
         }
 
-        Text("Fichiers en clair sur la clé (${clearFiles.size})", style = MaterialTheme.typography.titleMedium)
+        SectionTitle("Fichiers en clair sur la clé (${clearFiles.size})")
         if (tree == null) {
-            Text("Choisis d'abord le dossier de la clé.")
+            Text("Choisis d'abord le dossier de la clé.", color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else if (clearFiles.isEmpty()) {
-            Text("Aucun. Copie un fichier sur la clé, puis touche-le ici pour le chiffrer.")
+            Text("Aucun fichier en clair. Tout est chiffré 🎉", color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
-            Text("Touche un fichier pour le chiffrer (l'original est effacé) :", style = MaterialTheme.typography.bodySmall)
+            Text(
+                "Touche un fichier pour le chiffrer seul (ou utilise « Tout chiffrer ») :",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             clearFiles.forEach { doc ->
-                Card(Modifier.fillMaxWidth().clickable { hideKeyFile(doc) }) {
-                    Text("🔒  " + (doc.name ?: "?"), Modifier.padding(14.dp))
-                }
-            }
-        }
-
-        Text("Fichiers cachés (${binFiles.size})", style = MaterialTheme.typography.titleMedium)
-        if (binFiles.isEmpty()) {
-            Text("Aucun fichier caché pour l'instant.")
-        } else {
-            Text("Touche un fichier pour l'ouvrir (déchiffré en mémoire, jamais écrit sur la clé) :", style = MaterialTheme.typography.bodySmall)
-            binFiles.forEach { doc ->
-                Card(Modifier.fillMaxWidth().clickable { openBin(doc) }) {
-                    Text("🔓  " + (doc.name ?: "?"), Modifier.padding(14.dp))
+                Card(
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                    modifier = Modifier.fillMaxWidth().clickable { hideOne(doc) }
+                ) {
+                    Text("📄  " + (doc.name ?: "?"), Modifier.padding(14.dp))
                 }
             }
         }

@@ -6,8 +6,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.OutlinedButton
@@ -33,6 +36,7 @@ import kotlin.math.sqrt
 data class Module(
     val id: String,
     val title: String,
+    val tag: String,
     val keywords: List<String>,
     val content: @Composable () -> Unit
 )
@@ -112,10 +116,17 @@ fun Picker(label: String, options: List<String>, index: MutableState<Int>) {
 @Composable
 fun ResultBox(lines: List<String>) {
     if (lines.isEmpty()) return
-    Card(modifier = Modifier.fillMaxWidth()) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+        )
+    ) {
         Column(
-            Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+            Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             lines.forEach { Text(it, fontFamily = FontFamily.Monospace) }
         }
@@ -420,20 +431,20 @@ private fun ModBattery() {
 // ---------- Registre ----------
 
 val MODULES: List<Module> = listOf(
-    Module("ohm", "Loi d'Ohm", listOf("ohm", "tension", "courant", "resistance", "résistance", "puissance", "volt", "ampere", "ampère", "watt", "u", "i", "r", "p")) { ModOhm() },
-    Module("led", "Résistance pour LED", listOf("led", "diode", "resistance", "serie", "série", "limitation")) { ModLed() },
-    Module("ne555", "Timer 555 (astable)", listOf("555", "ne555", "timer", "oscillateur", "frequence", "fréquence", "astable")) { Mod555() },
-    Module("divider", "Diviseur de tension", listOf("diviseur", "pont", "tension", "vout", "diviseur de tension")) { ModDivider() },
-    Module("rescombo", "Résistances série / parallèle", listOf("resistance", "résistance", "serie", "parallele", "parallèle", "combinaison")) { ModResCombo() },
-    Module("capcombo", "Condensateurs série / parallèle", listOf("condensateur", "capacite", "capacité", "serie", "parallele", "parallèle", "farad")) { ModCapCombo() },
-    Module("rcfilter", "Filtre RC", listOf("filtre", "rc", "coupure", "passe-bas", "passe-haut", "frequence", "fréquence")) { ModRcFilter() },
-    Module("reactance", "Réactance (Xc / XL)", listOf("reactance", "réactance", "impedance", "impédance", "condensateur", "inductance", "bobine", "xc", "xl")) { ModReactance() },
-    Module("lm317", "Régulateur LM317", listOf("lm317", "regulateur", "régulateur", "tension", "alimentation")) { ModLm317() },
-    Module("baseconv", "Convertisseur bin / déc / hex", listOf("binaire", "decimal", "décimal", "hexadecimal", "hexadécimal", "conversion", "base", "bin", "hex", "oct")) { ModBaseConv() },
-    Module("logic", "Portes logiques", listOf("logique", "porte", "and", "or", "xor", "nand", "nor", "boolean", "booleen", "booléen")) { ModLogic() },
-    Module("triphase", "Triphasé", listOf("triphase", "triphasé", "phase", "ligne", "etoile", "étoile", "puissance", "400v")) { ModTriphase() },
-    Module("vdrop", "Chute de tension (câble)", listOf("chute", "cable", "câble", "section", "longueur", "cuivre", "fil")) { ModVoltageDrop() },
-    Module("battery", "Autonomie batterie", listOf("batterie", "autonomie", "accu", "mah", "duree", "durée", "consommation")) { ModBattery() }
+    Module("ohm", "Loi d'Ohm", "Ω", listOf("ohm", "tension", "courant", "resistance", "résistance", "puissance", "volt", "ampere", "ampère", "watt", "u", "i", "r", "p")) { ModOhm() },
+    Module("led", "Résistance pour LED", "LED", listOf("led", "diode", "resistance", "serie", "série", "limitation")) { ModLed() },
+    Module("ne555", "Timer 555 (astable)", "555", listOf("555", "ne555", "timer", "oscillateur", "frequence", "fréquence", "astable")) { Mod555() },
+    Module("divider", "Diviseur de tension", "÷", listOf("diviseur", "pont", "tension", "vout", "diviseur de tension")) { ModDivider() },
+    Module("rescombo", "Résistances série / parallèle", "R∥", listOf("resistance", "résistance", "serie", "parallele", "parallèle", "combinaison")) { ModResCombo() },
+    Module("capcombo", "Condensateurs série / parallèle", "C∥", listOf("condensateur", "capacite", "capacité", "serie", "parallele", "parallèle", "farad")) { ModCapCombo() },
+    Module("rcfilter", "Filtre RC", "RC", listOf("filtre", "rc", "coupure", "passe-bas", "passe-haut", "frequence", "fréquence")) { ModRcFilter() },
+    Module("reactance", "Réactance (Xc / XL)", "X", listOf("reactance", "réactance", "impedance", "impédance", "condensateur", "inductance", "bobine", "xc", "xl")) { ModReactance() },
+    Module("lm317", "Régulateur LM317", "317", listOf("lm317", "regulateur", "régulateur", "tension", "alimentation")) { ModLm317() },
+    Module("baseconv", "Convertisseur bin / déc / hex", "0b", listOf("binaire", "decimal", "décimal", "hexadecimal", "hexadécimal", "conversion", "base", "bin", "hex", "oct")) { ModBaseConv() },
+    Module("logic", "Portes logiques", "&", listOf("logique", "porte", "and", "or", "xor", "nand", "nor", "boolean", "booleen", "booléen")) { ModLogic() },
+    Module("triphase", "Triphasé", "3~", listOf("triphase", "triphasé", "phase", "ligne", "etoile", "étoile", "puissance", "400v")) { ModTriphase() },
+    Module("vdrop", "Chute de tension (câble)", "ΔU", listOf("chute", "cable", "câble", "section", "longueur", "cuivre", "fil")) { ModVoltageDrop() },
+    Module("battery", "Autonomie batterie", "🔋", listOf("batterie", "autonomie", "accu", "mah", "duree", "durée", "consommation")) { ModBattery() }
 )
 
 @Composable
